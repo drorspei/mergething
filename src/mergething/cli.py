@@ -45,11 +45,47 @@ def init_command(args):
     # Generate filename with completed pattern
     hostname = socket.gethostname()
     timestamp = int(time.time())
-    target_file = target_dir / f"ipython_history_{hostname}_0_{timestamp}.db"
+    target_file = target_dir / f"ipython_history_{hostname}_0_{timestamp}_completed.db"
 
     # Copy the file
     shutil.copy2(source_file, target_file)
     print(f"Copied history to {target_file}")
+
+    # Handle ipython_config.py
+    if args.config:
+        config_file = Path(args.config).expanduser()
+    else:
+        config_file = Path("~/.ipython/profile_default/ipython_config.py").expanduser()
+
+    # Check if config file exists and update it
+    config_lines = f'''
+try:
+    from mergething.ipython import sync_and_get_hist_file
+    c.HistoryManager.hist_file = sync_and_get_hist_file("{target_dir}")
+except Exception:
+    print("mergething: Error syncing and getting history file, using default ipython behavior")
+'''
+
+    if config_file.exists():
+        # Read existing config
+        with open(config_file, 'r') as f:
+            content = f.read()
+
+        # Check if mergething config already exists
+        if "from mergething.ipython import sync_and_get_hist_file" not in content:
+            # Append our configuration
+            with open(config_file, 'a') as f:
+                f.write(config_lines)
+            print(f"Updated {config_file} with mergething configuration")
+        else:
+            print(f"Config file {config_file} already contains mergething configuration")
+    else:
+        # Create new config file with our lines
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_file, 'w') as f:
+            f.write(config_lines.lstrip())
+        print(f"Created {config_file} with mergething configuration")
+
     return 0
 
 
@@ -78,17 +114,21 @@ def main():
     # Init command
     init_parser = subparsers.add_parser(
         "init",
-        help="Initialize a sync directory with current IPython history"
+        help="Initialize a sync directory with current IPython history and configure IPython"
     )
     init_parser.add_argument(
-        "source",
-        nargs="?",
+        "target_directory",
+        help="Target directory to copy history file to and use for syncing"
+    )
+    init_parser.add_argument(
+        "--source",
         default=None,
         help="Path to current IPython history file (default: ~/.ipython/profile_default/history.sqlite)"
     )
     init_parser.add_argument(
-        "target_directory",
-        help="Target directory to copy history file to"
+        "--config",
+        default=None,
+        help="Path to IPython config file (default: ~/.ipython/profile_default/ipython_config.py)"
     )
 
     args = parser.parse_args()
