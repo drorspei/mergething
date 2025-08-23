@@ -16,11 +16,10 @@ def get_safe_files_for_merge(sync_dir: Path, current_file: Path) -> List[Path]:
     safe_files = []
     current_hostname = socket.gethostname()
 
-    # 1. Files that have a _completed marker (these are guaranteed safe)
-    for marker_file in sync_dir.glob("ipython_history_*_completed.db"):
-        # Get the original file name by removing _completed suffix
-        original_name = marker_file.name.replace("_completed.db", ".db")
-        original_file = sync_dir / original_name
+    # 1. Files that have a .completed marker (these are guaranteed safe)
+    for marker_file in sync_dir.glob("ipython_history_*.db.completed"):
+        # Get the original file name by removing .completed suffix
+        original_file = sync_dir / marker_file.name.replace(".completed", "")
         if original_file.exists() and original_file != current_file:
             safe_files.append(original_file)
 
@@ -28,8 +27,6 @@ def get_safe_files_for_merge(sync_dir: Path, current_file: Path) -> List[Path]:
     for file_path in sync_dir.glob("ipython_history_*.db"):
         if file_path == current_file:
             continue
-        if "_completed" in file_path.name:
-            continue  # Skip marker files themselves
 
         try:
             # Parse hostname from filename: ipython_history_{hostname}_{pid}_{timestamp}.db
@@ -46,7 +43,7 @@ def get_safe_files_for_merge(sync_dir: Path, current_file: Path) -> List[Path]:
     def sort_key(file_path):
         try:
             # Extract hostname and timestamp from filename
-            parts = file_path.stem.replace('_completed', '').split('_')
+            parts = file_path.stem.split('_')
             if len(parts) >= 4:
                 hostname = parts[2]
                 timestamp = int(parts[-1])
@@ -208,15 +205,17 @@ def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age
     cutoff_time = time.time() - max_age_seconds
 
     # Clean up old history files and their markers
-    for file_path in sync_dir.glob(f"ipython_history_{hostname}_*.db"):
+    for file_path in sync_dir.glob(f"ipython_history_{hostname}_*.db*"):
         if file_path == current_file:
             continue
 
         try:
             # Extract timestamp from filename
-            if "_completed" in file_path.name:
-                # For marker files, extract timestamp from the pattern
-                parts = file_path.stem.replace('_completed', '').split('_')
+            # Handle both .db files and .db.completed files
+            if file_path.suffix == ".completed":
+                # For marker files, get the base filename
+                base_name = file_path.name.replace(".completed", "")
+                parts = Path(base_name).stem.split('_')
             else:
                 parts = file_path.stem.split('_')
             
@@ -226,11 +225,11 @@ def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age
                 # Delete the file
                 file_path.unlink()
                 if verbose:
-                    print(f"mergething: Cleaned up old history file: {file_path}")
+                    print(f"mergething: Cleaned up old file: {file_path}")
                 
                 # Also delete the marker file if this was an original file
-                if "_completed" not in file_path.name:
-                    marker_file = sync_dir / file_path.name.replace(".db", "_completed.db")
+                if file_path.suffix == ".db":
+                    marker_file = sync_dir / f"{file_path.name}.completed"
                     if marker_file.exists():
                         marker_file.unlink()
                         if verbose:
@@ -278,7 +277,7 @@ def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_his
         try:
             # Create an empty marker file to indicate this file is completed
             # This avoids conflicts with IPython's own history flushing
-            marker_file = sync_dir / f"ipython_history_{hostname}_{pid}_{timestamp}_completed.db"
+            marker_file = sync_dir / f"{current_file.name}.completed"
             marker_file.touch()
             if verbose:
                 print(f"mergething: Created completion marker: {marker_file}")

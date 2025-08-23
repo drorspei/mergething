@@ -45,11 +45,16 @@ def init_command(args):
     # Generate filename with completed pattern
     hostname = socket.gethostname()
     timestamp = int(time.time())
-    target_file = target_dir / f"ipython_history_{hostname}_0_{timestamp}_completed.db"
+    target_file = target_dir / f"ipython_history_{hostname}_0_{timestamp}.db"
 
     # Copy the file
     shutil.copy2(source_file, target_file)
     print(f"Copied history to {target_file}")
+    
+    # Create a marker file to indicate this file is completed
+    marker_file = target_dir / f"{target_file.name}.completed"
+    marker_file.touch()
+    print(f"Created completion marker: {marker_file}")
 
     # Handle ipython_config.py
     if args.config:
