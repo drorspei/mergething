@@ -61,7 +61,7 @@ def init_command(args):
     config_lines = f'''
 try:
     from mergething.ipython import sync_and_get_hist_file
-    c.HistoryManager.hist_file = sync_and_get_hist_file("{target_dir}")
+    c.HistoryManager.hist_file = sync_and_get_hist_file("{target_dir}", verbose=False)
 except Exception:
     print("mergething: Error syncing and getting history file, using default ipython behavior")
 '''

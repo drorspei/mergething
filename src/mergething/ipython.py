@@ -15,13 +15,13 @@ from typing import List, Union
 def get_safe_files_for_merge(sync_dir: Path, current_file: Path) -> List[Path]:
     """Get files that are definitely safe to read"""
     safe_files = []
+    current_hostname = socket.gethostname()
 
     # 1. All _completed files (these are guaranteed safe)
     completed_files = list(sync_dir.glob("ipython_history_*_completed.db"))
     safe_files.extend(completed_files)
 
     # 2. Regular files from other machines (safe due to Syncthing atomicity)
-    current_hostname = socket.gethostname()
     for file_path in sync_dir.glob("ipython_history_*.db"):
         if file_path == current_file:
             continue
@@ -38,6 +38,25 @@ def get_safe_files_for_merge(sync_dir: Path, current_file: Path) -> List[Path]:
         except (ValueError, IndexError):
             continue
 
+    # Sort files by (is_this_machine, timestamp) in reverse order
+    # This puts this machine's files first, and within each machine, newest files first
+    def sort_key(file_path):
+        try:
+            # Extract hostname and timestamp from filename
+            parts = file_path.stem.replace('_completed', '').split('_')
+            if len(parts) >= 4:
+                hostname = parts[2]
+                timestamp = int(parts[-1])
+                is_this_machine = (hostname == current_hostname)
+                # Return tuple for sorting: (is_this_machine, timestamp)
+                # We negate is_this_machine so True (1) comes before False (0) when reversed
+                return (is_this_machine, timestamp)
+        except (ValueError, IndexError):
+            # Fallback for files that don't match the expected pattern
+            return (False, 0)
+    
+    safe_files.sort(key=sort_key, reverse=True)
+    
     return safe_files
 
 
@@ -204,7 +223,7 @@ def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age
                 continue
 
 
-def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_history", verbose: bool = True) -> str:
+def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_history", verbose: bool = False) -> str:
     """
     Set up synchronized IPython history across multiple machines.
 

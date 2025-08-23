@@ -40,7 +40,7 @@ Add these lines to the end of your IPython configuration file (`~/.ipython/profi
 ```python
 try:
     from mergething.ipython import sync_and_get_hist_file
-    c.HistoryManager.hist_file = sync_and_get_hist_file("~/my_custom_sync_dir")
+    c.HistoryManager.hist_file = sync_and_get_hist_file("~/my_custom_sync_dir", verbose=False)
 except Exception:
     print("mergething: Error syncing and getting history file, using default ipython behavior")
 ```
