@@ -7,7 +7,6 @@ import shutil
 import socket
 import time
 from pathlib import Path
-from typing import List
 
 from .ipython import merge_histories
 
@@ -16,13 +15,13 @@ def merge_command(args):
     """Handle the merge command"""
     source_files = [Path(f) for f in args.sources]
     target_file = Path(args.target)
-    
+
     # Validate source files exist
     for source in source_files:
         if not source.exists():
             print(f"Error: Source file {source} does not exist")
             return 1
-    
+
     merge_histories(source_files, target_file)
     return 0
 
@@ -34,20 +33,20 @@ def init_command(args):
         source_file = Path(args.source).expanduser()
     else:
         source_file = Path("~/.ipython/profile_default/history.sqlite").expanduser()
-    
+
     if not source_file.exists():
         print(f"Error: History file {source_file} does not exist")
         return 1
-    
+
     # Prepare target directory
     target_dir = Path(args.target_directory).expanduser()
     target_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Generate filename with completed pattern
     hostname = socket.gethostname()
     timestamp = int(time.time())
     target_file = target_dir / f"ipython_history_{hostname}_0_{timestamp}.db"
-    
+
     # Copy the file
     shutil.copy2(source_file, target_file)
     print(f"Copied history to {target_file}")
@@ -60,10 +59,10 @@ def main():
         description="Merge IPython history files for syncing across devices"
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
-    
+
     # Merge command
     merge_parser = subparsers.add_parser(
-        "merge", 
+        "merge",
         help="Merge multiple history files into a target file"
     )
     merge_parser.add_argument(
@@ -75,7 +74,7 @@ def main():
         "target",
         help="Target file to merge histories into"
     )
-    
+
     # Init command
     init_parser = subparsers.add_parser(
         "init",
@@ -91,13 +90,13 @@ def main():
         "target_directory",
         help="Target directory to copy history file to"
     )
-    
+
     args = parser.parse_args()
-    
+
     if not args.command:
         parser.print_help()
         return 1
-    
+
     if args.command == "merge":
         return merge_command(args)
     elif args.command == "init":
