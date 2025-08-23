@@ -8,7 +8,7 @@ import socket
 import time
 from pathlib import Path
 
-from .ipython import merge_histories
+from .ipython import merge_histories, cleanup_old_files
 
 
 def merge_command(args):
@@ -23,6 +23,24 @@ def merge_command(args):
             return 1
 
     merge_histories(source_files, target_file)
+    return 0
+
+
+def cleanup_command(args):
+    """Handle the cleanup command"""
+    # Get the sync directory
+    sync_dir = Path(args.directory).expanduser()
+    
+    if not sync_dir.exists():
+        print(f"Error: Directory {sync_dir} does not exist")
+        return 1
+    
+    # Convert minutes to seconds
+    max_age_seconds = args.minutes * 60
+    hostname = socket.gethostname()
+    
+    # Run cleanup
+    cleanup_old_files(sync_dir, hostname, Path(), max_age_seconds, verbose=True)
     return 0
 
 
@@ -135,6 +153,21 @@ def main():
         default=None,
         help="Path to IPython config file (default: ~/.ipython/profile_default/ipython_config.py)"
     )
+    
+    # Cleanup command
+    cleanup_parser = subparsers.add_parser(
+        "cleanup",
+        help="Clean up old history files from the current host"
+    )
+    cleanup_parser.add_argument(
+        "directory",
+        help="Sync directory containing history files"
+    )
+    cleanup_parser.add_argument(
+        "minutes",
+        type=int,
+        help="Remove files older than this many minutes"
+    )
 
     args = parser.parse_args()
 
@@ -146,6 +179,8 @@ def main():
         return merge_command(args)
     elif args.command == "init":
         return init_command(args)
+    elif args.command == "cleanup":
+        return cleanup_command(args)
 
 
 if __name__ == "__main__":

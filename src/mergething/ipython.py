@@ -7,8 +7,46 @@ import sqlite3
 import time
 import socket
 import atexit
+import platform
+import subprocess
 from pathlib import Path
 from typing import List, Union
+
+
+def is_process_running(pid: int) -> bool:
+    """Check if a process with given PID is still running"""
+    system = platform.system()
+
+    try:
+        if system in ['Linux', 'Android']:
+            # Check /proc/{pid} on Linux/Android
+            return Path(f'/proc/{pid}').exists()
+        elif system == 'Darwin':  # macOS
+            # Use os.kill with signal 0 to check if process exists
+            try:
+                os.kill(pid, 0)
+                return True
+            except (OSError, ProcessLookupError):
+                return False
+        elif system == 'Windows':
+            # Use tasklist command on Windows
+            try:
+                result = subprocess.run(
+                    ['tasklist', '/FI', f'PID eq {pid}'],
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                return str(pid) in result.stdout
+            except (subprocess.SubprocessError, FileNotFoundError):
+                # If we can't run tasklist, assume process is running
+                return True
+        else:
+            # Unknown system, assume process is running to be safe
+            return True
+    except Exception:
+        # If we can't determine, assume process is running to be safe
+        return True
 
 
 def get_safe_files_for_merge(sync_dir: Path, current_file: Path) -> List[Path]:
@@ -62,8 +100,6 @@ def get_safe_files_for_merge(sync_dir: Path, current_file: Path) -> List[Path]:
 
 def merge_histories(source_files: List[Path], target_file: Path, verbose: bool = True) -> None:
     """Merge SQLite history files preserving session integrity and chronological order"""
-    print("merging: ", source_files)
-
     # Create target database with IPython's exact schema
     target_conn = sqlite3.connect(str(target_file))
 
@@ -218,8 +254,32 @@ def merge_histories(source_files: List[Path], target_file: Path, verbose: bool =
 
 
 def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age_seconds: int = 300, verbose: bool = True) -> None:
-    """Clean up old files from this machine"""
+    """Clean up old files from this machine and mark completed files from dead processes"""
     cutoff_time = time.time() - max_age_seconds
+    current_hostname = socket.gethostname()
+
+    # First, check for files from dead processes and mark them as completed
+    if hostname == current_hostname:
+        for file_path in sync_dir.glob(f"ipython_history_{hostname}_*.db"):
+            if file_path == current_file or file_path.suffix == ".completed":
+                continue
+
+            try:
+                # Parse the PID from filename: ipython_history_{hostname}_{pid}_{timestamp}.db
+                parts = file_path.stem.split('_')
+                if len(parts) >= 5:  # Has PID
+                    pid = int(parts[3])
+
+                    # Check if the process is still running
+                    if not is_process_running(pid):
+                        # Process is dead, mark the file as completed
+                        marker_file = sync_dir / f"{file_path.name}.completed"
+                        if not marker_file.exists():
+                            marker_file.touch()
+                            if verbose:
+                                print(f"mergething: Marked completed (process {pid} dead): {file_path}")
+            except (ValueError, IndexError):
+                continue
 
     # Clean up old history files and their markers
     for file_path in sync_dir.glob(f"ipython_history_{hostname}_*.db*"):
