@@ -41,7 +41,7 @@ def get_safe_files_for_merge(sync_dir: Path, current_file: Path) -> List[Path]:
     return safe_files
 
 
-def merge_histories(source_files: List[Path], target_file: Path) -> None:
+def merge_histories(source_files: List[Path], target_file: Path, verbose: bool = True) -> None:
     """Merge SQLite history files preserving session integrity and chronological order"""
 
     # Create target database with IPython's exact schema
@@ -171,17 +171,19 @@ def merge_histories(source_files: List[Path], target_file: Path) -> None:
             source_conn.close()
 
         except sqlite3.Error as e:
-            print(f"Warning: Could not read {source_file}: {e}")
+            if verbose:
+                print(f"mergething: Warning: Could not read {source_file}: {e}")
             continue
 
     target_conn.commit()
     target_conn.close()
-    print(f"Merged {len(files_with_times)} history files into {next_session_id - 1} sessions")
+    if verbose:
+        print(f"mergething: Merged {len(files_with_times)} history files into {next_session_id - 1} sessions")
 
 
-def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age_hours: int = 2) -> None:
+def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age_seconds: int = 300, verbose: bool = True) -> None:
     """Clean up old files from this machine"""
-    cutoff_time = time.time() - (max_age_hours * 3600)
+    cutoff_time = time.time() - max_age_seconds
 
     for pattern in [f"ipython_history_{hostname}_*.db", f"ipython_history_{hostname}_*_completed.db"]:
         for file_path in sync_dir.glob(pattern):
@@ -195,18 +197,20 @@ def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age
 
                 if file_timestamp < cutoff_time:
                     file_path.unlink()
-                    print(f"Cleaned up old history file: {file_path}")
+                    if verbose:
+                        print(f"mergething: Cleaned up old history file: {file_path}")
 
             except (ValueError, IndexError, OSError):
                 continue
 
 
-def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_history") -> str:
+def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_history", verbose: bool = True) -> str:
     """
     Set up synchronized IPython history across multiple machines.
 
     Args:
         sync_dir: Directory where history files are synced (default: ~/syncthing/ipython_history)
+        verbose: Whether to print status messages (default: True)
 
     Returns:
         Path to the history file for this IPython session
@@ -223,10 +227,12 @@ def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_his
     safe_files = get_safe_files_for_merge(sync_dir, current_file)
 
     if safe_files:
-        print(f"Merging {len(safe_files)} history files...")
-        merge_histories(safe_files, current_file)
+        if verbose:
+            print(f"mergething: Merging {len(safe_files)} history files...")
+        merge_histories(safe_files, current_file, verbose=verbose)
     else:
-        print("No existing history files found, starting fresh.")
+        if verbose:
+            print("mergething: No existing history files found, starting fresh.")
 
     # Create completed copy for other processes to use
     completed_file = sync_dir / f"ipython_history_{hostname}_{timestamp}_completed.db"
@@ -234,7 +240,7 @@ def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_his
         shutil.copy2(current_file, completed_file)
 
     # Clean up old files from this machine
-    cleanup_old_files(sync_dir, hostname, current_file)
+    cleanup_old_files(sync_dir, hostname, current_file, verbose=verbose)
 
     # Register cleanup on exit
     def cleanup_on_exit():
@@ -242,9 +248,11 @@ def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_his
             # Update the completed copy on exit
             if current_file.exists():
                 shutil.copy2(current_file, completed_file)
-                print(f"Updated completed history file: {completed_file}")
+                if verbose:
+                    print(f"mergething: Updated completed history file: {completed_file}")
         except Exception as e:
-            print(f"Warning: Could not update completed file on exit: {e}")
+            if verbose:
+                print(f"mergething: Warning: Could not update completed file on exit: {e}")
 
     atexit.register(cleanup_on_exit)
 
