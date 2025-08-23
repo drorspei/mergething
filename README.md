@@ -32,6 +32,22 @@ except Exception:
     print("mergething: Error syncing and getting history file, using default ipython behavior")
 ```
 
+You can also pass the hostname you want files to use, this is useful when multiple devices have the same hostname:
+
+```python
+    c.HistoryManager.hist_file = sync_and_get_hist_file("~/syncthing/ipython_history", verbose=False, hostname="mydevice")
+```
+
+For Android/Termux users where the hostname is always "localhost", you can specify a custom hostname:
+
+```python
+try:
+    from mergething.ipython import sync_and_get_hist_file
+    c.HistoryManager.hist_file = sync_and_get_hist_file("~/syncthing/ipython_history", verbose=False, hostname="my_phone")
+except Exception:
+    print("mergething: Error syncing and getting history file, using default ipython behavior")
+```
+
 ## Merging existing files
 
 You can use the CLI tool to merge existing files:

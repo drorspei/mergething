@@ -10,7 +10,7 @@ import atexit
 import platform
 import subprocess
 from pathlib import Path
-from typing import List, Union
+from typing import List, Optional, Union
 
 
 def is_process_running(pid: int) -> bool:
@@ -316,13 +316,15 @@ def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age
             continue
 
 
-def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_history", verbose: bool = False) -> str:
+def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_history", verbose: bool = False, hostname: Optional[str] = None) -> str:
     """
     Set up synchronized IPython history across multiple machines.
 
     Args:
         sync_dir: Directory where history files are synced (default: ~/syncthing/ipython_history)
-        verbose: Whether to print status messages (default: True)
+        verbose: Whether to print status messages (default: False)
+        hostname: Hostname to use for file naming (default: socket.gethostname())
+                 Useful on Android/Termux where hostname is always "localhost"
 
     Returns:
         Path to the history file for this IPython session
@@ -330,7 +332,8 @@ def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_his
     sync_dir = Path(sync_dir).expanduser()
     sync_dir.mkdir(parents=True, exist_ok=True)
 
-    hostname = socket.gethostname()
+    if hostname is None:
+        hostname = socket.gethostname()
     pid = os.getpid()
     timestamp = int(time.time())
     current_file = sync_dir / f"ipython_history_{hostname}_{pid}_{timestamp}.db"
