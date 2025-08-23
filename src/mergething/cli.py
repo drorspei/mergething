@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""
+CLI for mergething - IPython history merging tool
+"""
+import argparse
+import shutil
+import socket
+import time
+from pathlib import Path
+from typing import List
+
+from .ipython import merge_histories
+
+
+def merge_command(args):
+    """Handle the merge command"""
+    source_files = [Path(f) for f in args.sources]
+    target_file = Path(args.target)
+    
+    # Validate source files exist
+    for source in source_files:
+        if not source.exists():
+            print(f"Error: Source file {source} does not exist")
+            return 1
+    
+    merge_histories(source_files, target_file)
+    return 0
+
+
+def init_command(args):
+    """Handle the init command"""
+    # Determine source file
+    if args.source:
+        source_file = Path(args.source).expanduser()
+    else:
+        source_file = Path("~/.ipython/profile_default/history.sqlite").expanduser()
+    
+    if not source_file.exists():
+        print(f"Error: History file {source_file} does not exist")
+        return 1
+    
+    # Prepare target directory
+    target_dir = Path(args.target_directory).expanduser()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate filename with completed pattern
+    hostname = socket.gethostname()
+    timestamp = int(time.time())
+    target_file = target_dir / f"ipython_history_{hostname}_0_{timestamp}.db"
+    
+    # Copy the file
+    shutil.copy2(source_file, target_file)
+    print(f"Copied history to {target_file}")
+    return 0
+
+
+def main():
+    """Main entry point for the CLI"""
+    parser = argparse.ArgumentParser(
+        description="Merge IPython history files for syncing across devices"
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    # Merge command
+    merge_parser = subparsers.add_parser(
+        "merge", 
+        help="Merge multiple history files into a target file"
+    )
+    merge_parser.add_argument(
+        "sources",
+        nargs="+",
+        help="Source history files to merge"
+    )
+    merge_parser.add_argument(
+        "target",
+        help="Target file to merge histories into"
+    )
+    
+    # Init command
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Initialize a sync directory with current IPython history"
+    )
+    init_parser.add_argument(
+        "source",
+        nargs="?",
+        default=None,
+        help="Path to current IPython history file (default: ~/.ipython/profile_default/history.sqlite)"
+    )
+    init_parser.add_argument(
+        "target_directory",
+        help="Target directory to copy history file to"
+    )
+    
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        return 1
+    
+    if args.command == "merge":
+        return merge_command(args)
+    elif args.command == "init":
+        return init_command(args)
+
+
+if __name__ == "__main__":
+    exit(main())

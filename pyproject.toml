@@ -30,6 +30,9 @@ classifiers = [
 requires-python = ">=3.8"
 dependencies = []
 
+[project.scripts]
+mergething = "mergething.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/drorspei/mergething"
 Repository = "https://github.com/drorspei/mergething"
