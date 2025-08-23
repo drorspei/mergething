@@ -4,11 +4,15 @@ App over syncthing that takes care merging things
 
 Install using `pip install mergething`
 
-## ipython
+## ipython/jupyter
 
-Currently supports merging ipython history files.
+Currently supports merging ipython/jupyter history files.
 
-# IPython History Sync
+mergething will give each ipython/jupyter session it's own history file, so in contrast to vanilla ipython, you can run multiple ipython sessions at the same time without worrying about corruption. You can even use mergething on a single machine in order to get this benefit.
+
+When a session is closed, its history file is marked "completed", and once it is incorporated into a new session, it will be deleted (only ever by the same device).
+
+# IPython/jupyter History Sync
 
 ## 1. Configure Syncthing
 

@@ -299,18 +299,18 @@ def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age
             file_timestamp = int(parts[-1])
 
             if file_timestamp < cutoff_time:
-                # Delete the file
-                file_path.unlink()
-                if verbose:
-                    print(f"mergething: Cleaned up old file: {file_path}")
-
-                # Also delete the marker file if this was an original file
+                # Delete the marker file if this was an original file
                 if file_path.suffix == ".db":
                     marker_file = sync_dir / f"{file_path.name}.completed"
                     if marker_file.exists():
                         marker_file.unlink()
                         if verbose:
                             print(f"mergething: Cleaned up marker file: {marker_file}")
+
+                # Delete the file
+                file_path.unlink()
+                if verbose:
+                    print(f"mergething: Cleaned up old file: {file_path}")
 
         except (ValueError, IndexError, OSError):
             continue
@@ -349,9 +349,6 @@ def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_his
         if verbose:
             print("mergething: No existing history files found, starting fresh.")
 
-    # Clean up old files from this machine
-    cleanup_old_files(sync_dir, hostname, current_file, verbose=verbose)
-
     # Register cleanup on exit
     def cleanup_on_exit():
         try:
@@ -361,9 +358,13 @@ def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_his
             marker_file.touch()
             if verbose:
                 print(f"mergething: Created completion marker: {marker_file}")
+            
+            # Now clean up old files from this machine
+            # This happens after marking completion to avoid race conditions
+            cleanup_old_files(sync_dir, hostname, current_file, verbose=verbose)
         except Exception as e:
             if verbose:
-                print(f"mergething: Warning: Could not create completion marker on exit: {e}")
+                print(f"mergething: Warning: Could not create completion marker or cleanup on exit: {e}")
 
     atexit.register(cleanup_on_exit)
 
