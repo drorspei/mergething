@@ -6,7 +6,6 @@ import os
 import sqlite3
 import time
 import socket
-import shutil
 import atexit
 from pathlib import Path
 from typing import List, Union
@@ -17,16 +16,20 @@ def get_safe_files_for_merge(sync_dir: Path, current_file: Path) -> List[Path]:
     safe_files = []
     current_hostname = socket.gethostname()
 
-    # 1. All _completed files (these are guaranteed safe)
-    completed_files = list(sync_dir.glob("ipython_history_*_completed.db"))
-    safe_files.extend(completed_files)
+    # 1. Files that have a _completed marker (these are guaranteed safe)
+    for marker_file in sync_dir.glob("ipython_history_*_completed.db"):
+        # Get the original file name by removing _completed suffix
+        original_name = marker_file.name.replace("_completed.db", ".db")
+        original_file = sync_dir / original_name
+        if original_file.exists() and original_file != current_file:
+            safe_files.append(original_file)
 
     # 2. Regular files from other machines (safe due to Syncthing atomicity)
     for file_path in sync_dir.glob("ipython_history_*.db"):
         if file_path == current_file:
             continue
         if "_completed" in file_path.name:
-            continue  # Already included above
+            continue  # Skip marker files themselves
 
         try:
             # Parse hostname from filename: ipython_history_{hostname}_{pid}_{timestamp}.db
@@ -204,23 +207,37 @@ def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age
     """Clean up old files from this machine"""
     cutoff_time = time.time() - max_age_seconds
 
-    for pattern in [f"ipython_history_{hostname}_*.db", f"ipython_history_{hostname}_*_completed.db"]:
-        for file_path in sync_dir.glob(pattern):
-            if file_path == current_file:
-                continue
+    # Clean up old history files and their markers
+    for file_path in sync_dir.glob(f"ipython_history_{hostname}_*.db"):
+        if file_path == current_file:
+            continue
 
-            try:
-                # Extract timestamp (handle both regular and completed files)
+        try:
+            # Extract timestamp from filename
+            if "_completed" in file_path.name:
+                # For marker files, extract timestamp from the pattern
                 parts = file_path.stem.replace('_completed', '').split('_')
-                file_timestamp = int(parts[-1])
+            else:
+                parts = file_path.stem.split('_')
+            
+            file_timestamp = int(parts[-1])
 
-                if file_timestamp < cutoff_time:
-                    file_path.unlink()
-                    if verbose:
-                        print(f"mergething: Cleaned up old history file: {file_path}")
+            if file_timestamp < cutoff_time:
+                # Delete the file
+                file_path.unlink()
+                if verbose:
+                    print(f"mergething: Cleaned up old history file: {file_path}")
+                
+                # Also delete the marker file if this was an original file
+                if "_completed" not in file_path.name:
+                    marker_file = sync_dir / file_path.name.replace(".db", "_completed.db")
+                    if marker_file.exists():
+                        marker_file.unlink()
+                        if verbose:
+                            print(f"mergething: Cleaned up marker file: {marker_file}")
 
-            except (ValueError, IndexError, OSError):
-                continue
+        except (ValueError, IndexError, OSError):
+            continue
 
 
 def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_history", verbose: bool = False) -> str:
@@ -253,25 +270,21 @@ def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_his
         if verbose:
             print("mergething: No existing history files found, starting fresh.")
 
-    # Create completed copy for other processes to use
-    completed_file = sync_dir / f"ipython_history_{hostname}_{timestamp}_completed.db"
-    if current_file.exists():
-        shutil.copy2(current_file, completed_file)
-
     # Clean up old files from this machine
     cleanup_old_files(sync_dir, hostname, current_file, verbose=verbose)
 
     # Register cleanup on exit
     def cleanup_on_exit():
         try:
-            # Update the completed copy on exit
-            if current_file.exists():
-                shutil.copy2(current_file, completed_file)
-                if verbose:
-                    print(f"mergething: Updated completed history file: {completed_file}")
+            # Create an empty marker file to indicate this file is completed
+            # This avoids conflicts with IPython's own history flushing
+            marker_file = sync_dir / f"ipython_history_{hostname}_{pid}_{timestamp}_completed.db"
+            marker_file.touch()
+            if verbose:
+                print(f"mergething: Created completion marker: {marker_file}")
         except Exception as e:
             if verbose:
-                print(f"mergething: Warning: Could not update completed file on exit: {e}")
+                print(f"mergething: Warning: Could not create completion marker on exit: {e}")
 
     atexit.register(cleanup_on_exit)
 
