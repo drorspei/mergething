@@ -54,14 +54,15 @@ def get_safe_files_for_merge(sync_dir: Path, current_file: Path) -> List[Path]:
         except (ValueError, IndexError):
             # Fallback for files that don't match the expected pattern
             return (False, 0)
-    
+
     safe_files.sort(key=sort_key, reverse=True)
-    
+
     return safe_files
 
 
 def merge_histories(source_files: List[Path], target_file: Path, verbose: bool = True) -> None:
     """Merge SQLite history files preserving session integrity and chronological order"""
+    print("merging: ", source_files)
 
     # Create target database with IPython's exact schema
     target_conn = sqlite3.connect(str(target_file))
@@ -88,7 +89,7 @@ def merge_histories(source_files: List[Path], target_file: Path, verbose: bool =
     for source_file in source_files:
         try:
             # Extract timestamp from filename
-            parts = Path(source_file).stem.replace('_completed', '').split('_')
+            parts = Path(source_file).stem.split('_')
             timestamp = int(parts[-1])
             files_with_times.append((timestamp, source_file))
         except (ValueError, IndexError):
@@ -99,12 +100,13 @@ def merge_histories(source_files: List[Path], target_file: Path, verbose: bool =
             except OSError:
                 continue
 
-    # Sort by timestamp (oldest first)
-    files_with_times.sort(key=lambda x: x[0])
+    # Sort by timestamp (newest first for reverse processing)
+    files_with_times.sort(key=lambda x: x[0], reverse=True)
 
     # Track seen sessions using tuple of all commands + outputs
     seen_sessions = set()
-    next_session_id = 1
+    # Collect all unique sessions in reverse order
+    sessions_to_insert = []
 
     for timestamp, source_file in files_with_times:
         try:
@@ -117,11 +119,11 @@ def merge_histories(source_files: List[Path], target_file: Path, verbose: bool =
             ''')
             has_output_history = cursor.fetchone() is not None
 
-            # Get all sessions from this file
+            # Get all sessions from this file in reverse order
             sessions_cursor = source_conn.execute('''
                 SELECT session, start, end, num_cmds, remark
                 FROM sessions
-                ORDER BY session
+                ORDER BY session DESC
             ''')
 
             for session_row in sessions_cursor:
@@ -160,32 +162,18 @@ def merge_histories(source_files: List[Path], target_file: Path, verbose: bool =
                 session_signature = (commands_tuple, outputs_tuple)
 
                 # Skip if we've seen this exact session before
+                # Since we're going in reverse, we keep the most recent version
                 if session_signature in seen_sessions:
                     continue
 
                 seen_sessions.add(session_signature)
 
-                # Insert session metadata
-                target_conn.execute('''
-                    INSERT INTO sessions (session, start, end, num_cmds, remark)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (next_session_id, start_time, end_time, num_cmds, remark))
-
-                # Insert all commands for this session
-                for line_num, source, source_raw in commands:
-                    target_conn.execute('''
-                        INSERT INTO history (session, line, source, source_raw)
-                        VALUES (?, ?, ?, ?)
-                    ''', (next_session_id, line_num, source, source_raw))
-
-                # Insert all outputs for this session
-                for line_num, output in outputs:
-                    target_conn.execute('''
-                        INSERT INTO output_history (session, line, output)
-                        VALUES (?, ?, ?)
-                    ''', (next_session_id, line_num, output))
-
-                next_session_id += 1
+                # Store the session data for later insertion
+                sessions_to_insert.append({
+                    'metadata': (start_time, end_time, num_cmds, remark),
+                    'commands': commands,
+                    'outputs': outputs
+                })
 
             source_conn.close()
 
@@ -194,10 +182,39 @@ def merge_histories(source_files: List[Path], target_file: Path, verbose: bool =
                 print(f"mergething: Warning: Could not read {source_file}: {e}")
             continue
 
+    # Now insert sessions in chronological order (reverse of reverse order)
+    sessions_to_insert.sort(key=lambda d: d['metadata'][1] or d['metadata'][0])
+
+    next_session_id = 1
+    for session_data in sessions_to_insert:
+        start_time, end_time, num_cmds, remark = session_data['metadata']
+
+        # Insert session metadata
+        target_conn.execute('''
+            INSERT INTO sessions (session, start, end, num_cmds, remark)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (next_session_id, start_time, end_time, num_cmds, remark))
+
+        # Insert all commands for this session
+        for line_num, source, source_raw in session_data['commands']:
+            target_conn.execute('''
+                INSERT INTO history (session, line, source, source_raw)
+                VALUES (?, ?, ?, ?)
+            ''', (next_session_id, line_num, source, source_raw))
+
+        # Insert all outputs for this session
+        for line_num, output in session_data['outputs']:
+            target_conn.execute('''
+                INSERT INTO output_history (session, line, output)
+                VALUES (?, ?, ?)
+            ''', (next_session_id, line_num, output))
+
+        next_session_id += 1
+
     target_conn.commit()
     target_conn.close()
     if verbose:
-        print(f"mergething: Merged {len(files_with_times)} history files into {next_session_id - 1} sessions")
+        print(f"mergething: Merged {len(files_with_times)} history files into {len(sessions_to_insert)} sessions")
 
 
 def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age_seconds: int = 300, verbose: bool = True) -> None:
@@ -218,7 +235,7 @@ def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age
                 parts = Path(base_name).stem.split('_')
             else:
                 parts = file_path.stem.split('_')
-            
+
             file_timestamp = int(parts[-1])
 
             if file_timestamp < cutoff_time:
@@ -226,7 +243,7 @@ def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age
                 file_path.unlink()
                 if verbose:
                     print(f"mergething: Cleaned up old file: {file_path}")
-                
+
                 # Also delete the marker file if this was an original file
                 if file_path.suffix == ".db":
                     marker_file = sync_dir / f"{file_path.name}.completed"
