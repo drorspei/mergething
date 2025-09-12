@@ -253,15 +253,14 @@ def merge_histories(source_files: List[Path], target_file: Path, verbose: bool =
         print(f"mergething: Merged {len(files_with_times)} history files into {len(sessions_to_insert)} sessions")
 
 
-def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age_seconds: int = 300, verbose: bool = True) -> None:
+def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, verbose: bool = True) -> None:
     """Clean up old files from this machine and mark completed files from dead processes"""
-    cutoff_time = time.time() - max_age_seconds
     current_hostname = socket.gethostname()
 
     # First, check for files from dead processes and mark them as completed
     if hostname == current_hostname:
         for file_path in sync_dir.glob(f"ipython_history_{hostname}_*.db"):
-            if file_path == current_file or file_path.suffix == ".completed":
+            if file_path == current_file:
                 continue
 
             try:
@@ -282,36 +281,14 @@ def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, max_age
                 continue
 
     # Clean up old history files and their markers
-    for file_path in sync_dir.glob(f"ipython_history_{hostname}_*.db*"):
-        if file_path == current_file:
+    for file_path in sync_dir.glob(f"ipython_history_{hostname}_*.db.completed"):
+        f = sync_dir / file_path.name[:-len(".completed")]
+        if f == current_file:
             continue
 
         try:
-            # Extract timestamp from filename
-            # Handle both .db files and .db.completed files
-            if file_path.suffix == ".completed":
-                # For marker files, get the base filename
-                base_name = file_path.name.replace(".completed", "")
-                parts = Path(base_name).stem.split('_')
-            else:
-                parts = file_path.stem.split('_')
-
-            file_timestamp = int(parts[-1])
-
-            if file_timestamp < cutoff_time:
-                # Delete the marker file if this was an original file
-                if file_path.suffix == ".db":
-                    marker_file = sync_dir / f"{file_path.name}.completed"
-                    if marker_file.exists():
-                        marker_file.unlink()
-                        if verbose:
-                            print(f"mergething: Cleaned up marker file: {marker_file}")
-
-                # Delete the file
-                file_path.unlink()
-                if verbose:
-                    print(f"mergething: Cleaned up old file: {file_path}")
-
+            file_path.unlink()
+            f.unlink()
         except (ValueError, IndexError, OSError):
             continue
 
