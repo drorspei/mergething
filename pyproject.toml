@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mergething"
-version = "0.1.0"
+version = "0.1.1"
 description = "App over syncthing that takes care merging things"
 readme = "README.md"
 license = {text = "MIT"}
