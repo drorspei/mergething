@@ -253,7 +253,7 @@ def merge_histories(source_files: List[Path], target_file: Path, verbose: bool =
         print(f"mergething: Merged {len(files_with_times)} history files into {len(sessions_to_insert)} sessions")
 
 
-def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, verbose: bool = True) -> None:
+def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, safe_files: List[Path], verbose: bool = True) -> None:
     """Clean up old files from this machine and mark completed files from dead processes"""
     current_hostname = socket.gethostname()
 
@@ -283,7 +283,7 @@ def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, verbose
     # Clean up old history files and their markers
     for file_path in sync_dir.glob(f"ipython_history_{hostname}_*.db.completed"):
         f = sync_dir / file_path.name[:-len(".completed")]
-        if f == current_file:
+        if f == current_file or f not in safe_files:
             continue
 
         try:
@@ -338,7 +338,7 @@ def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_his
             
             # Now clean up old files from this machine
             # This happens after marking completion to avoid race conditions
-            cleanup_old_files(sync_dir, hostname, current_file, verbose=verbose)
+            cleanup_old_files(sync_dir, hostname, current_file, safe_files, verbose=verbose)
         except Exception as e:
             if verbose:
                 print(f"mergething: Warning: Could not create completion marker or cleanup on exit: {e}")
