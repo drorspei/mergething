@@ -13,6 +13,13 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 
+try:
+    from line_profiler import profile
+except ImportError:
+    def profile(func):
+        return func
+
+
 def is_process_running(pid: int) -> bool:
     """Check if a process with given PID is still running"""
     system = platform.system()
@@ -98,10 +105,15 @@ def get_safe_files_for_merge(sync_dir: Path, current_file: Path) -> List[Path]:
     return safe_files
 
 
-def merge_histories(source_files: List[Path], target_file: Path, verbose: bool = True) -> None:
+@profile
+def merge_histories(source_files: List[Path], target_file: Path, nthreads=2, verbose: bool = True) -> None:
     """Merge SQLite history files preserving session integrity and chronological order"""
+    from collections import defaultdict
+
     # Create target database with IPython's exact schema
     target_conn = sqlite3.connect(str(target_file))
+    target_conn.execute("PRAGMA journal_mode=OFF")
+    target_conn.execute("PRAGMA synchronous=OFF")
 
     # Use IPython's exact table definitions
     target_conn.execute('''
@@ -141,114 +153,122 @@ def merge_histories(source_files: List[Path], target_file: Path, verbose: bool =
 
     # Track seen sessions using tuple of all commands + outputs
     seen_sessions = set()
-    # Collect all unique sessions in reverse order
+    # Collect unique sessions: (source_file, orig_session_id, metadata)
     sessions_to_insert = []
 
-    for timestamp, source_file in files_with_times:
+    @profile
+    def _read_file(source_file):
+        """Read file and compute session signatures via GROUP BY (single table scan).
+        GROUP_CONCAT runs in SQLite's C engine (GIL released), enabling
+        true parallelism across threads."""
+        conn = sqlite3.connect(":memory:")
+        with open(str(source_file), "rb") as f:
+            conn.deserialize(f.read())
+        has_out = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='output_history'"
+        ).fetchone() is not None
+
+        sessions = conn.execute(
+            'SELECT session, start, end, num_cmds, remark FROM sessions ORDER BY session DESC'
+        ).fetchall()
+
+        # Single table scan with GROUP BY — much faster than per-session subqueries
+        hist_sigs = dict(conn.execute(
+            "SELECT session, GROUP_CONCAT(line || char(31) || source || char(31) || COALESCE(source_raw, ''), char(30)) FROM history GROUP BY session"
+        ).fetchall())
+
+        out_sigs = {}
+        if has_out:
+            out_sigs = dict(conn.execute(
+                "SELECT session, GROUP_CONCAT(line || char(31) || output, char(30)) FROM output_history GROUP BY session"
+            ).fetchall())
+        conn.close()
+
+        return [(s[0], s[1:], (hist_sigs.get(s[0]), out_sigs.get(s[0]))) for s in sessions]
+
+    # Read all files in parallel threads. GROUP BY + GROUP_CONCAT runs in
+    # SQLite's C engine which releases the GIL, enabling true parallelism.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(nthreads, len(files_with_times))) as executor:
+        futures = [
+            (source_file, executor.submit(_read_file, source_file))
+            for _, source_file in files_with_times
+        ]
+
+    # Dedup in order (files already sorted newest-first)
+    for source_file, future in futures:
         try:
-            source_conn = sqlite3.connect(str(source_file))
-
-            # Check if output_history table exists
-            cursor = source_conn.execute('''
-                SELECT name FROM sqlite_master
-                WHERE type='table' AND name='output_history'
-            ''')
-            has_output_history = cursor.fetchone() is not None
-
-            # Get all sessions from this file in reverse order
-            sessions_cursor = source_conn.execute('''
-                SELECT session, start, end, num_cmds, remark
-                FROM sessions
-                ORDER BY session DESC
-            ''')
-
-            for session_row in sessions_cursor:
-                orig_session, start_time, end_time, num_cmds, remark = session_row
-
-                # Get all commands for this session
-                history_cursor = source_conn.execute('''
-                    SELECT line, source, source_raw
-                    FROM history
-                    WHERE session = ?
-                    ORDER BY line
-                ''', (orig_session,))
-
-                commands = list(history_cursor)
-
-                # Get all outputs for this session (if table exists)
-                outputs = []
-                if has_output_history:
-                    output_cursor = source_conn.execute('''
-                        SELECT line, output
-                        FROM output_history
-                        WHERE session = ?
-                        ORDER BY line
-                    ''', (orig_session,))
-                    outputs = list(output_cursor)
-
-                # Create session signature: tuple of commands + outputs
-                commands_tuple = tuple(
-                    (line, source or "", source_raw or "")
-                    for line, source, source_raw in commands
-                )
-                outputs_tuple = tuple(
-                    (line, output or "")
-                    for line, output in outputs
-                )
-                session_signature = (commands_tuple, outputs_tuple)
-
-                # Skip if we've seen this exact session before
-                # Since we're going in reverse, we keep the most recent version
-                if session_signature in seen_sessions:
-                    continue
-
-                seen_sessions.add(session_signature)
-
-                # Store the session data for later insertion
-                sessions_to_insert.append({
-                    'metadata': (start_time, end_time, num_cmds, remark),
-                    'commands': commands,
-                    'outputs': outputs
-                })
-
-            source_conn.close()
-
-        except sqlite3.Error as e:
+            file_sessions = future.result()
+        except Exception as e:
             if verbose:
                 print(f"mergething: Warning: Could not read {source_file}: {e}")
             continue
 
-    # Now insert sessions in chronological order (reverse of reverse order)
-    sessions_to_insert.sort(key=lambda d: d['metadata'][1] or d['metadata'][0])
+        for session_id, metadata, signature in file_sessions:
+            if signature in seen_sessions:
+                continue
+            seen_sessions.add(signature)
+            sessions_to_insert.append((source_file, session_id, metadata))
 
-    next_session_id = 1
-    for session_data in sessions_to_insert:
-        start_time, end_time, num_cmds, remark = session_data['metadata']
+    # Sort sessions chronologically
+    sessions_to_insert.sort(key=lambda d: d[2][1] or d[2][0])
+
+    # Group by source file, preserving new session IDs
+    sessions_by_file = defaultdict(list)
+    for new_id, (source_file, orig_session, metadata) in enumerate(sessions_to_insert, 1):
+        sessions_by_file[source_file].append((orig_session, new_id, metadata))
+
+    # Use ATTACH + INSERT...SELECT to write data without passing through Python
+    target_conn.execute('''
+        CREATE TEMP TABLE session_map (source_session INTEGER, target_session INTEGER)
+    ''')
+
+    for source_file, session_list in sessions_by_file.items():
+        target_conn.execute("ATTACH DATABASE ? AS src", (str(source_file),))
 
         # Insert session metadata
+        target_conn.executemany(
+            'INSERT INTO sessions (session, start, end, num_cmds, remark) VALUES (?, ?, ?, ?, ?)',
+            [(new_id, *meta) for _, new_id, meta in session_list]
+        )
+
+        # Populate mapping table
+        target_conn.execute("DELETE FROM session_map")
+        target_conn.executemany(
+            'INSERT INTO session_map VALUES (?, ?)',
+            [(orig, new_id) for orig, new_id, _ in session_list]
+        )
+
+        # Bulk copy history via SQL (data stays in SQLite, never passes through Python)
         target_conn.execute('''
-            INSERT INTO sessions (session, start, end, num_cmds, remark)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (next_session_id, start_time, end_time, num_cmds, remark))
+            INSERT INTO history (session, line, source, source_raw)
+            SELECT m.target_session, h.line, h.source, h.source_raw
+            FROM src.history h
+            JOIN session_map m ON h.session = m.source_session
+        ''')
 
-        # Insert all commands for this session
-        for line_num, source, source_raw in session_data['commands']:
-            target_conn.execute('''
-                INSERT INTO history (session, line, source, source_raw)
-                VALUES (?, ?, ?, ?)
-            ''', (next_session_id, line_num, source, source_raw))
-
-        # Insert all outputs for this session
-        for line_num, output in session_data['outputs']:
+        # Bulk copy output_history if it exists in source
+        has_output = target_conn.execute(
+            "SELECT name FROM src.sqlite_master WHERE type='table' AND name='output_history'"
+        ).fetchone()
+        if has_output:
             target_conn.execute('''
                 INSERT INTO output_history (session, line, output)
-                VALUES (?, ?, ?)
-            ''', (next_session_id, line_num, output))
+                SELECT m.target_session, o.line, o.output
+                FROM src.output_history o
+                JOIN session_map m ON o.session = m.source_session
+            ''')
 
-        next_session_id += 1
+        target_conn.commit()
+        target_conn.execute("DETACH DATABASE src")
 
+    target_conn.execute("DROP TABLE session_map")
     target_conn.commit()
     target_conn.close()
+    # Ensure all data is fsynced to disk (writes above used synchronous=OFF for speed)
+    fd = os.open(str(target_file), os.O_RDONLY)
+    os.fsync(fd)
+    os.close(fd)
     if verbose:
         print(f"mergething: Merged {len(files_with_times)} history files into {len(sessions_to_insert)} sessions")
 
@@ -287,18 +307,19 @@ def cleanup_old_files(sync_dir: Path, hostname: str, current_file: Path, safe_fi
             continue
 
         try:
-            file_path.unlink()
-            f.unlink()
+            for f in sync_dir.glob(f'{file_path.name[:-len(".completed")]}*'):
+                f.unlink()
         except (ValueError, IndexError, OSError):
             continue
 
 
-def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_history", verbose: bool = False, hostname: Optional[str] = None) -> str:
+def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_history", nthreads=2, verbose: bool = False, hostname: Optional[str] = None) -> str:
     """
     Set up synchronized IPython history across multiple machines.
 
     Args:
-        sync_dir: Directory where history files are synced (default: ~/syncthing/ipython_history)
+        sync_dir: Directory where history files are synced (default: ~/syncthing/ipython_history
+        nthreads: Max number of threads to use)
         verbose: Whether to print status messages (default: False)
         hostname: Hostname to use for file naming (default: socket.gethostname())
                  Useful on Android/Termux where hostname is always "localhost"
@@ -321,7 +342,7 @@ def sync_and_get_hist_file(sync_dir: Union[str, Path] = "~/syncthing/ipython_his
     if safe_files:
         if verbose:
             print(f"mergething: Merging {len(safe_files)} history files...")
-        merge_histories(safe_files, current_file, verbose=verbose)
+        merge_histories(safe_files, current_file, nthreads=nthreads, verbose=verbose)
     else:
         if verbose:
             print("mergething: No existing history files found, starting fresh.")
