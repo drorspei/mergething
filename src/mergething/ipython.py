@@ -161,9 +161,19 @@ def merge_histories(source_files: List[Path], target_file: Path, nthreads=2, ver
         """Read file and compute session signatures via GROUP BY (single table scan).
         GROUP_CONCAT runs in SQLite's C engine (GIL released), enabling
         true parallelism across threads."""
-        conn = sqlite3.connect(":memory:")
-        with open(str(source_file), "rb") as f:
-            conn.deserialize(f.read())
+        # Load into memory for fast queries. Use deserialize (one sequential
+        # read) when possible, fall back to backup() for WAL databases where
+        # committed data may live in the WAL file.
+        wal_path = str(source_file) + '-wal'
+        if os.path.exists(wal_path) and os.path.getsize(wal_path) > 0:
+            file_conn = sqlite3.connect(str(source_file))
+            conn = sqlite3.connect(":memory:")
+            file_conn.backup(conn)
+            file_conn.close()
+        else:
+            conn = sqlite3.connect(":memory:")
+            with open(str(source_file), "rb") as f:
+                conn.deserialize(f.read())
         has_out = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='output_history'"
         ).fetchone() is not None
